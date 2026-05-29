@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Ant Colony: Press Start Edition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            margin: 0; 
+            background: #ffffff; 
+            color: #808080; 
+            font-family: 'Press Start 2P', monospace; 
+            overflow: hidden; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: space-between;
+            height: 100vh;
+            box-sizing: border-box;
+            padding: 15px 0;
+        }
+        canvas { 
+            border: 3px solid #808080; 
+            image-rendering: pixelated; 
+            background: #ffffff; 
+            cursor: crosshair; 
+        }
+        #ui { 
+            width: 800px; 
+            padding: 5px 10px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            box-sizing: border-box; 
+        }
+        #time-bar-container { 
+            width: 160px; 
+            height: 12px; 
+            background: #e0e0e0; 
+            border: 2px solid #808080; 
+        }
+        #time-bar { 
+            width: 100%; 
+            height: 100%; 
+            background: #808080; 
+            transition: width 0.1s; 
+        }
+        .stats { 
+            font-size: 11px; /* Ajustado para el tamaño de la fuente pixelada */
+            line-height: 1.4;
+        }
+        
+        /* Créditos inferiores estilo arcade */
+        #footer {
+            font-size: 10px;
+            letter-spacing: 1px;
+            color: #a0a0a0;
+            text-align: center;
+            width: 100%;
+        }
+        
+        body.frenzy-mode { 
+            background: #1a1a1a; 
+            color: #808080; 
+        }
+        body.frenzy-mode canvas { 
+            border-color: #808080; 
+            background: #1a1a1a; 
+        }
+        body.frenzy-mode #time-bar-container { 
+            background: #333; 
+        }
+        body.frenzy-mode #footer {
+            color: #555555;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="stats">ANTS: <span id="ant-count" style="color: inherit;">0</span></div>
+    <div class="stats" id="frenzy-alert">MODE: NORMAL</div>
+    <div class="stats">SCORE: <span id="score" style="color: inherit;">0</span></div>
+    <div id="time-bar-container"><div id="time-bar"></div></div>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="footer">DESARROLLADO POR C.LEON.SAR</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const antCountEl = document.getElementById('ant-count');
+const timeBar = document.getElementById('time-bar');
+const frenzyAlert = document.getElementById('frenzy-alert');
+
+canvas.width = 800;
+canvas.height = 600;
+
+const CENTER = { x: canvas.width / 2, y: canvas.height / 2 };
+let score = 0;
+let timeLeft = 100;
+let ants = [];
+let foods = []; 
+let waypoints = [];
+let wasps = []; 
+let isGameOver = false;
+
+let isFrenzy = false;
+let frenzyTimer = 0;
+
+// ==========================================
+// SINTETIZADOR DE MÚSICA DE 8-BITS
+// ==========================================
+let audioCtx = null;
+let nextNoteTime = 0;
+let currentNoteIndex = 0;
+
+const NOTES = { C4: 261.63, E4: 329.63, G4: 392.00, A4: 440.00, B4: 493.88, C5: 523.25, D5: 587.33, E5: 659.25 };
+const MELODY = [
+    'C4', 'E4', 'G4', 'E4', 'A4', 'G4', 'E4', 'G4',
+    'D5', 'B4', 'G4', 'B4', 'C5', 'G4', 'E4', 'C4'
+];
+
+function initAudio() {
+    if (audioCtx) return; 
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    nextNoteTime = audioCtx.currentTime;
+    playMusicTick();
+}
+
+function playMusicTick() {
+    if (isGameOver) return;
+    while (nextNoteTime < audioCtx.currentTime + 0.1) {
+        let secondsPerBeat = isFrenzy ? 0.12 : 0.22; 
+        play8BitNote(MELODY[currentNoteIndex], nextNoteTime, secondsPerBeat);
+        nextNoteTime += secondsPerBeat;
+        currentNoteIndex = (currentNoteIndex + 1) % MELODY.length;
+    }
+    setTimeout(playMusicTick, 25);
+}
+
+function play8BitNote(noteName, time, duration) {
+    if (!audioCtx) return;
+    let osc = audioCtx.createOscillator();
+    let gainNode = audioCtx.createGain();
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    osc.type = isFrenzy ? 'triangle' : 'square'; 
+    let freq = NOTES[noteName];
+    if (isFrenzy) freq *= 1.5; 
+    osc.frequency.setValueAtTime(freq, time);
+    gainNode.gain.setValueAtTime(0.04, time); 
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, time + duration - 0.02);
+    osc.start(time);
+    osc.stop(time + duration);
+}
+// ==========================================
+
+class Ant {
+    constructor(isLeader = false) {
+        this.isLeader = isLeader;
+        this.x = CENTER.x;
+        this.y = CENTER.y;
+        this.vx = 0;
+        this.vy = 0;
+        this.hasFood = false;
+        this.angle = 0;
+    }
+
+    update(index) {
+        let targetX, targetY;
+
+        if (this.hasFood) {
+            targetX = CENTER.x; targetY = CENTER.y;
+        } else if (this.isLeader && waypoints.length > 0) {
+            targetX = waypoints[0].x; targetY = waypoints[0].y;
+        } else {
+            let prev = ants[index - 1];
+            if (prev) { targetX = prev.x; targetY = prev.y; }
+        }
+
+        let acceleration = isFrenzy ? 0.40 : 0.25; 
+        let minDistance = this.hasFood ? 5 : 12;
+
+        if (targetX !== undefined) {
+            let dx = targetX - this.x;
+            let dy = targetY - this.y;
+            let dist = Math.hypot(dx, dy);
+            
+            if (dist > minDistance) {
+                this.vx += (dx / dist) * acceleration;
+                this.vy += (dy / dist) * acceleration;
+            }
+
+            if (this.hasFood && dist < 12) {
+                this.hasFood = false;
+                score += isFrenzy ? 60 : 30; 
+                scoreEl.innerText = score;
+                timeLeft = Math.min(100, timeLeft + 15);
+                ants.push(new Ant(false)); 
+            }
+
+            if (this.isLeader && waypoints.length > 0 && dist < 15) {
+                waypoints.shift();
+            }
+        }
+
+        this.vx += (Math.random() - 0.5) * (isFrenzy ? 0.5 : 0.4);
+        this.vy += (Math.random() - 0.5) * (isFrenzy ? 0.5 : 0.4);
+        this.vx *= 0.90;
+        this.vy *= 0.90;
+        this.x += this.vx;
+        this.y += this.vy;
+        this.angle = Math.atan2(this.vy, this.vx);
+
+        if (!this.hasFood) {
+            foods.forEach((food) => {
+                if (food.active && Math.hypot(food.x - this.x, food.y - this.y) < 12) {
+                    this.hasFood = true;
+                    food.active = false;
+
+                    if (this.isLeader) {
+                        this.isLeader = false; 
+                        waypoints = [];       
+
+                        let nextLeaderCandidate = ants.find(ant => ant !== this && !ant.hasFood);
+                        if (nextLeaderCandidate) {
+                            nextLeaderCandidate.isLeader = true;
+                        } else if (ants.length > 1) {
+                            ants[0].isLeader = true;
+                        }
+                    }
+
+                    if (!isFrenzy) {
+                        setTimeout(() => spawnFood(1), 1000);
+                    }
+                }
+            });
+        }
+    }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        
+        if (isFrenzy) {
+            ctx.fillStyle = this.hasFood ? '#ff0055' : (this.isLeader ? '#00bcff' : '#ffffff');
+        } else {
+            ctx.fillStyle = this.hasFood ? '#00aa55' : (this.isLeader ? '#555555' : '#000000');
+        }
+        
+        ctx.fillRect(2, -1, 2, 2); 
+        ctx.fillRect(0, -1, 2, 2);
+        ctx.fillRect(-2, -1, 2, 2);
+        ctx.restore();
+    }
+}
+
+class Wasp {
+    constructor(isSuper = false) {
+        const side = Math.floor(Math.random() * 4);
+        if(side === 0) { this.x = Math.random()*canvas.width; this.y = -40; }
+        else if(side === 1) { this.x = Math.random()*canvas.width; this.y = canvas.height+40; }
+        else if(side === 2) { this.x = -40; this.y = Math.random()*canvas.height; }
+        else { this.x = canvas.width+40; this.y = Math.random()*canvas.height; }
+        
+        this.isSuper = isSuper;
+        this.maxHp = isSuper ? 100 : 20;
+        this.hp = this.maxHp;
+        this.baseSpeed = isSuper ? 0.5 : 0.8; 
+        this.size = isSuper ? 26 : 14;       
+        this.dead = false;
+    }
+
+    update() {
+        if (this.dead) return;
+
+        let dx = CENTER.x - this.x;
+        let dy = CENTER.y - this.y;
+        let dist = Math.hypot(dx, dy);
+        
+        let antsNear = [];
+        ants.forEach((ant, i) => {
+            let antDist = Math.hypot(ant.x - this.x, ant.y - this.y);
+            if (antDist < (this.size / 2 + 10)) {
+                this.hp -= isFrenzy ? 0.2 : 0.1; 
+                antsNear.push(i);
+            } else if (antDist < 60) {
+                antsNear.push(i);
+            }
+        });
+
+        let speedPenalty = Math.max(0.1, 1 - (antsNear.length * (this.isSuper ? 0.04 : 0.12)));
+        let currentSpeed = this.baseSpeed * speedPenalty;
+
+        if (dist > 15) {
+            this.x += (dx / dist) * currentSpeed + (Math.random() - 0.5) * 1.5;
+            this.y += (dy / dist) * currentSpeed + (Math.random() - 0.5) * 1.5;
+        } else {
+            timeLeft -= this.isSuper ? 0.3 : 0.1; 
+        }
+
+        let attackChance = this.isSuper ? 0.03 : 0.01;
+        if (antsNear.length > 0 && antsNear.length < 5 && Math.random() < attackChance) {
+            let victimIndex = antsNear[Math.floor(Math.random()*antsNear.length)];
+            let wasLeader = ants[victimIndex].isLeader;
+            ants.splice(victimIndex, 1);
+            
+            if (wasLeader && ants.length > 0) {
+                let backupLeader = ants.find(ant => !ant.hasFood);
+                if (backupLeader) backupLeader.isLeader = true;
+                else ants[0].isLeader = true;
+            }
+        }
+
+        if (this.hp <= 0) {
+            score += this.isSuper ? 2000 : 500; 
+            scoreEl.innerText = score;
+            this.dead = true;
+        }
+    }
+
+    draw() {
+        if (this.dead) return;
+        ctx.fillStyle = '#ff4500'; 
+        ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = this.isSuper ? 2 : 1;
+        ctx.strokeRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(this.x - this.size/2, this.y - (this.size/2 + 10), (Math.max(0, this.hp)/this.maxHp)*this.size, 3);
+    }
+}
+
+function spawnFood(num = 1) {
+    if (isGameOver) return;
+    for(let i = 0; i < num; i++) {
+        foods.push({
+            x: 100 + Math.random() * (canvas.width - 200),
+            y: 100 + Math.random() * (canvas.height - 200),
+            active: true
+        });
+    }
+}
+
+canvas.addEventListener('mousedown', (e) => {
+    initAudio(); 
+    if (isGameOver) return;
+    const rect = canvas.getBoundingClientRect();
+    
+    waypoints = []; 
+    waypoints.push({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+});
+
+function triggerFrenzy() {
+    isFrenzy = true;
+    frenzyTimer = 600; 
+    document.body.classList.add('frenzy-mode');
+    frenzyAlert.innerText = "FRENZY MODE!";
+    frenzyAlert.style.color = "#ff0055";
+    foods = [];
+    spawnFood(4);
+}
+
+function endFrenzy() {
+    isFrenzy = false;
+    document.body.classList.remove('frenzy-mode');
+    frenzyAlert.innerText = "MODE: NORMAL";
+    frenzyAlert.style.color = "";
+    foods = [];
+    spawnFood(1);
+}
+
+function init() {
+    ants = [];
+    for(let i=0; i<15; i++) ants.push(new Ant(i === 0));
+    spawnFood(1);
+    requestAnimationFrame(gameLoop);
+}
+
+function gameLoop() {
+    if (isGameOver) return;
+
+    ctx.fillStyle = isFrenzy ? 'rgba(26, 26, 26, 0.4)' : 'rgba(255, 255, 255, 0.4)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (!isFrenzy && Math.random() < 0.0004) {
+        triggerFrenzy();
+    }
+
+    if (isFrenzy) {
+        frenzyTimer--;
+        let activeFoodCount = foods.filter(f => f.active).length;
+        if (activeFoodCount < 3) {
+            spawnFood(1);
+        }
+        if (frenzyTimer <= 0) {
+            endFrenzy();
+        }
+    }
+
+    // Hormiguero
+    ctx.strokeStyle = isFrenzy ? '#ffffff' : '#000000';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(CENTER.x, CENTER.y, 25, 0, Math.PI*2);
+    ctx.stroke();
+
+    // Comidas
+    foods.forEach((food) => {
+        if (food.active) {
+            ctx.fillStyle = isFrenzy ? '#ff0055' : '#00aa55'; 
+            ctx.fillRect(food.x-4, food.y-4, 8, 8);
+        }
+    });
+
+    // Control de dificultad por número de hormigas
+    let currentAntCount = ants.length;
+    let maxNormalWasps = 1;
+    let allowSuperWasp = false;
+
+    if (currentAntCount >= 300) {
+        maxNormalWasps = 4;
+        allowSuperWasp = true;
+    } else if (currentAntCount >= 200) {
+        maxNormalWasps = 3;
+    } else if (currentAntCount >= 100) {
+        maxNormalWasps = 2;
+    }
+
+    let currentNormalWasps = wasps.filter(w => !w.isSuper).length;
+    let currentSuperWasps = wasps.filter(w => w.isSuper).length;
+
+    if (currentNormalWasps < maxNormalWasps && Math.random() < 0.004) {
+        wasps.push(new Wasp(false));
+    }
+
+    if (allowSuperWasp && currentSuperWasps < 1 && Math.random() < 0.002) {
+        wasps.push(new Wasp(true));
+    }
+
+    for (let i = wasps.length - 1; i >= 0; i--) {
+        wasps[i].update();
+        if (!wasps[i].dead) {
+            wasps[i].draw();
+        } else {
+            wasps.splice(i, 1);
+        }
+    }
+
+    let activeLeaderExists = ants.some(ant => ant.isLeader);
+    if (!activeLeaderExists && ants.length > 0) {
+        let potentialLeader = ants.find(ant => !ant.hasFood);
+        if (potentialLeader) potentialLeader.isLeader = true;
+        else ants[0].isLeader = true;
+    }
+
+    ants.forEach((ant, i) => {
+        ant.update(i);
+        ant.draw();
+    });
+
+    timeLeft -= isFrenzy ? 0.04 : 0.08; 
+    timeBar.style.width = Math.max(0, timeLeft) + '%';
+    antCountEl.innerText = ants.length;
+
+    if (timeLeft <= 0 || ants.length === 0) {
+        isGameOver = true;
+        document.body.classList.remove('frenzy-mode');
+        ctx.fillStyle = "#808080";
+        // Cambio de fuente también en el texto del Canvas al perder
+        ctx.font = "24px 'Press Start 2P'";
+        ctx.textAlign = "center";
+        ctx.fillText("GAME OVER", canvas.width/2, canvas.height/2);
+        setTimeout(() => location.reload(), 4000);
+        return;
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+init();
+</script>
+</body>
+</html>
