@@ -117,7 +117,6 @@ let isGameOver = false;
 let isFrenzy = false;
 let frenzyTimer = 0;
 
-// Control de tiempo de alta precisión homologado
 let lastTime = performance.now();
 
 // ==========================================
@@ -181,8 +180,25 @@ class Ant {
 
     update(index, ratio) {
         let targetX, targetY;
+        let attackingWasp = null;
 
-        if (this.hasFood) {
+        if (!this.hasFood) {
+            for (let wasp of wasps) {
+                if (!wasp.dead && Math.hypot(wasp.x - this.x, wasp.y - this.y) < 75) {
+                    attackingWasp = wasp;
+                    break;
+                }
+            }
+        }
+
+        if (attackingWasp) {
+            let totalAttackers = ants.length; 
+            let circumferenceAngle = (index / totalAttackers) * Math.PI * 2;
+            let surroundRadius = (attackingWasp.size / 2) + 4; 
+            
+            targetX = attackingWasp.x + Math.cos(circumferenceAngle) * surroundRadius;
+            targetY = attackingWasp.y + Math.sin(circumferenceAngle) * surroundRadius;
+        } else if (this.hasFood) {
             targetX = CENTER.x; targetY = CENTER.y;
         } else if (this.isLeader && waypoints.length > 0) {
             targetX = waypoints[0].x; targetY = waypoints[0].y;
@@ -191,9 +207,8 @@ class Ant {
             if (prev) { targetX = prev.x; targetY = prev.y; }
         }
 
-        // Físicas usando el ratio estricto del fotograma
         let acceleration = (isFrenzy ? 0.40 : 0.25) * ratio; 
-        let minDistance = this.hasFood ? 5 : 12;
+        let minDistance = attackingWasp ? 2 : (this.hasFood ? 5 : 12);
 
         if (targetX !== undefined) {
             let dx = targetX - this.x;
@@ -213,7 +228,7 @@ class Ant {
                 ants.push(new Ant(false)); 
             }
 
-            if (this.isLeader && waypoints.length > 0 && dist < 15) {
+            if (this.isLeader && waypoints.length > 0 && dist < 15 && !attackingWasp) {
                 waypoints.shift();
             }
         }
@@ -221,13 +236,17 @@ class Ant {
         this.vx += (Math.random() - 0.5) * (isFrenzy ? 0.5 : 0.4) * ratio;
         this.vy += (Math.random() - 0.5) * (isFrenzy ? 0.5 : 0.4) * ratio;
         
-        // Fricción corregida exponencialmente según la tasa de refresco de Edge/Safari
         this.vx *= Math.pow(0.90, ratio);
         this.vy *= Math.pow(0.90, ratio);
         
         this.x += this.vx * ratio;
         this.y += this.vy * ratio;
-        this.angle = Math.atan2(this.vy, this.vx);
+        
+        if (attackingWasp) {
+            this.angle = Math.atan2(attackingWasp.y - this.y, attackingWasp.x - this.x);
+        } else {
+            this.angle = Math.atan2(this.vy, this.vx);
+        }
 
         if (!this.hasFood) {
             foods.forEach((food) => {
@@ -274,18 +293,30 @@ class Ant {
 }
 
 class Wasp {
-    constructor(isSuper = false) {
+    constructor(type = 'normal') {
         const side = Math.floor(Math.random() * 4);
-        if(side === 0) { this.x = Math.random()*canvas.width; this.y = -40; }
-        else if(side === 1) { this.x = Math.random()*canvas.width; this.y = canvas.height+40; }
-        else if(side === 2) { this.x = -40; this.y = Math.random()*canvas.height; }
-        else { this.x = canvas.width+40; this.y = Math.random()*canvas.height; }
+        if(side === 0) { this.x = Math.random()*canvas.width; this.y = -60; }
+        else if(side === 1) { this.x = Math.random()*canvas.width; this.y = canvas.height+60; }
+        else if(side === 2) { this.x = -60; this.y = Math.random()*canvas.height; }
+        else { this.x = canvas.width+60; this.y = Math.random()*canvas.height; }
         
-        this.isSuper = isSuper;
-        this.maxHp = isSuper ? 100 : 20;
+        this.type = type; 
+        
+        if (this.type === 'queen') {
+            this.maxHp = 315;               // Modificado: 300 + 5% de aumento de resistencia = 315 HP
+            this.baseSpeed = 0.3;           
+            this.size = 45;                 
+        } else if (this.type === 'super') {
+            this.maxHp = 100;
+            this.baseSpeed = 0.5;
+            this.size = 26;
+        } else {
+            this.maxHp = 20;
+            this.baseSpeed = 0.8;
+            this.size = 14;
+        }
+        
         this.hp = this.maxHp;
-        this.baseSpeed = isSuper ? 0.5 : 0.8; 
-        this.size = isSuper ? 26 : 14;       
         this.dead = false;
     }
 
@@ -299,26 +330,32 @@ class Wasp {
         let antsNear = [];
         ants.forEach((ant, i) => {
             let antDist = Math.hypot(ant.x - this.x, ant.y - this.y);
-            if (antDist < (this.size / 2 + 10)) {
+            if (antDist < (this.size / 2 + 15)) {
                 this.hp -= (isFrenzy ? 0.2 : 0.1) * ratio; 
-                antsNear.push(i);
-            } else if (antDist < 60) {
                 antsNear.push(i);
             }
         });
 
-        let speedPenalty = Math.max(0.1, 1 - (antsNear.length * (this.isSuper ? 0.04 : 0.12)));
+        let weightFactor = this.type === 'queen' ? 0.01 : (this.type === 'super' ? 0.04 : 0.12);
+        let speedPenalty = Math.max(0.1, 1 - (antsNear.length * weightFactor));
         let currentSpeed = this.baseSpeed * speedPenalty * ratio;
 
         if (dist > 15) {
             this.x += (dx / dist) * currentSpeed + (Math.random() - 0.5) * 1.5 * ratio;
             this.y += (dy / dist) * currentSpeed + (Math.random() - 0.5) * 1.5 * ratio;
         } else {
-            timeLeft -= (this.isSuper ? 0.3 : 0.1) * ratio; 
+            let damage = 0.1;
+            if (this.type === 'super') damage = 0.3;
+            if (this.type === 'queen') damage = 0.9;
+            timeLeft -= damage * ratio; 
         }
 
-        let attackChance = (this.isSuper ? 0.03 : 0.01) * ratio;
-        if (antsNear.length > 0 && antsNear.length < 5 && Math.random() < attackChance) {
+        let attackChance = 0.01;
+        if (this.type === 'super') attackChance = 0.03;
+        if (this.type === 'queen') attackChance = 0.06;
+        attackChance *= ratio;
+
+        if (antsNear.length > 0 && antsNear.length < 8 && Math.random() < attackChance) {
             let victimIndex = antsNear[Math.floor(Math.random()*antsNear.length)];
             let wasLeader = ants[victimIndex].isLeader;
             ants.splice(victimIndex, 1);
@@ -331,7 +368,10 @@ class Wasp {
         }
 
         if (this.hp <= 0) {
-            score += this.isSuper ? 2000 : 500; 
+            if (this.type === 'queen') score += 10000;
+            else if (this.type === 'super') score += 2000;
+            else score += 500;
+            
             scoreEl.innerText = score;
             this.dead = true;
         }
@@ -339,13 +379,22 @@ class Wasp {
 
     draw() {
         if (this.dead) return;
-        ctx.fillStyle = '#ff4500'; 
+        
+        if (this.type === 'queen') {
+            ctx.fillStyle = '#8b008b'; 
+        } else if (this.type === 'super') {
+            ctx.fillStyle = '#ff4500'; 
+        } else {
+            ctx.fillStyle = '#ffcc00'; 
+        }
+        
         ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
         ctx.strokeStyle = '#000000';
-        ctx.lineWidth = this.isSuper ? 2 : 1;
+        ctx.lineWidth = this.type === 'queen' ? 3 : (this.type === 'super' ? 2 : 1);
         ctx.strokeRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+        
         ctx.fillStyle = 'red';
-        ctx.fillRect(this.x - this.size/2, this.y - (this.size/2 + 10), (Math.max(0, this.hp)/this.maxHp)*this.size, 3);
+        ctx.fillRect(this.x - this.size/2, this.y - (this.size/2 + 10), (Math.max(0, this.hp)/this.maxHp)*this.size, 4);
     }
 }
 
@@ -370,7 +419,7 @@ canvas.addEventListener('mousedown', (e) => {
 
 function triggerFrenzy() {
     isFrenzy = true;
-    frenzyTimer = 10; // Segundos reales de duración
+    frenzyTimer = 10; 
     document.body.classList.add('frenzy-mode');
     frenzyAlert.innerText = "FRENZY MODE!";
     frenzyAlert.style.color = "#ff0055";
@@ -398,21 +447,16 @@ function init() {
 function gameLoop(currentTime) {
     if (isGameOver) return;
 
-    // Medir Delta Time real en segundos
     let dt = (currentTime - lastTime) / 1000;
-    
-    // Cap protector contra congelamiento o desbordamientos de tasa en Edge
     if (dt > 0.1) dt = 0.1;
     if (dt <= 0) dt = 0.016; 
     lastTime = currentTime;
 
-    // El ratio normaliza las físicas tomando como base perfecta 60 FPS (16.66ms por frame)
     let ratio = dt * 60;
 
     ctx.fillStyle = isFrenzy ? 'rgba(26, 26, 26, 0.4)' : 'rgba(255, 255, 255, 0.4)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Activación basada en tiempo real independiente de hercios
     if (!isFrenzy && Math.random() < 0.025 * dt) {
         triggerFrenzy();
     }
@@ -443,30 +487,44 @@ function gameLoop(currentTime) {
         }
     });
 
-    // Control de oleadas de avispas
+    // ===================================================
+    // NUEVAS REGLAS DE INVASIÓN (DOS REINAS + ESCOLTA REAL)
+    // ===================================================
     let currentAntCount = ants.length;
-    let maxNormalWasps = 1;
-    let allowSuperWasp = false;
+    let maxNormalWasps = 0;
+    let maxSuperWasps = 0;
+    let maxQueenWasps = 0;
 
-    if (currentAntCount >= 300) {
-        maxNormalWasps = 4;
-        allowSuperWasp = true;
-    } else if (currentAntCount >= 200) {
+    if (currentAntCount >= 315) {
+        maxNormalWasps = 7;  // Modificado: 7 avispas
+        maxSuperWasps = 4;   // Modificado: 4 súper avispas
+        maxQueenWasps = 2;   // Modificado: 2 avispas reina simultáneas
+    } else if (currentAntCount >= 245 && currentAntCount <= 300) {
+        maxNormalWasps = 6;
+        maxSuperWasps = 3;  
+    } else if (currentAntCount >= 150 && currentAntCount <= 234) {
         maxNormalWasps = 3;
-    } else if (currentAntCount >= 100) {
-        maxNormalWasps = 2;
+        maxSuperWasps = 1;  
+    } else if (currentAntCount >= 65 && currentAntCount <= 145) {
+        maxNormalWasps = 2; 
+    } else if (currentAntCount < 50) {
+        maxNormalWasps = 1; 
     }
 
-    let currentNormalWasps = wasps.filter(w => !w.isSuper).length;
-    let currentSuperWasps = wasps.filter(w => w.isSuper).length;
+    let currentNormalCount = wasps.filter(w => w.type === 'normal').length;
+    let currentSuperCount = wasps.filter(w => w.type === 'super').length;
+    let currentQueenCount = wasps.filter(w => w.type === 'queen').length;
 
-    if (currentNormalWasps < maxNormalWasps && Math.random() < 0.25 * dt) {
-        wasps.push(new Wasp(false));
+    if (currentNormalCount < maxNormalWasps && Math.random() < 0.3 * dt) {
+        wasps.push(new Wasp('normal'));
     }
-
-    if (allowSuperWasp && currentSuperWasps < 1 && Math.random() < 0.12 * dt) {
-        wasps.push(new Wasp(true));
+    if (currentSuperCount < maxSuperWasps && Math.random() < 0.15 * dt) {
+        wasps.push(new Wasp('super'));
     }
+    if (currentQueenCount < maxQueenWasps && Math.random() < 0.08 * dt) {
+        wasps.push(new Wasp('queen'));
+    }
+    // ===================================================
 
     for (let i = wasps.length - 1; i >= 0; i--) {
         wasps[i].update(ratio);
@@ -489,7 +547,6 @@ function gameLoop(currentTime) {
         ant.draw();
     });
 
-    // El tiempo drena de forma idéntica en 60Hz, 144Hz o superiores
     timeLeft -= (isFrenzy ? 2.5 : 5.0) * dt; 
     timeBar.style.width = Math.max(0, timeLeft) + '%';
     antCountEl.innerText = ants.length;
